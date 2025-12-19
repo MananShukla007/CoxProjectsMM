@@ -1,438 +1,220 @@
 import streamlit as st
 from openai import OpenAI
-import os
-import pdfplumber
-from fpdf import FPDF
-import json
-from datetime import datetime
 
+# --------------------------------------------------
+# PAGE CONFIG
+# --------------------------------------------------
 st.set_page_config(
-    page_title="SMU COX Case Study Bot",
-    page_icon="🎓",
+    page_title="SMU Cox AI Teaching Tools",
     layout="wide"
 )
 
-SMU_BLUE = "#0033A0"
+# --------------------------------------------------
+# API KEY (TEMP DEMO KEY — REPLACE LATER)
+# --------------------------------------------------
+OPENAI_API_KEY = ""
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-st.markdown("""
-<style>
-    .stApp { 
-        background-color: #FFFFFF !important; 
-    }
-    h1, h2, h3, label { 
-        color: #0033A0 !important; 
-    }
-    p, div { 
-        color: #000000 !important; 
-    }
-    .left-panel {
-        background-color: #F8F9FA;
-        padding: 20px;
-        border-radius: 10px;
-        border: 2px solid #0033A0;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .role-header {
-        background: linear-gradient(135deg, #0033A0 0%, #0055CC 100%);
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    }
-    .role-header h3 {
-        color: #FFFFFF !important;
-        margin: 0;
-        font-weight: 600;
-    }
-    .stButton button {
-        border-radius: 8px;
-        font-weight: 500;
-        transition: all 0.3s ease;
-    }
-    .stButton button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-    }
-    div[data-testid="stChatInput"] {
-        border-radius: 10px;
-        border: 2px solid #0033A0;
-    }
-    .stChatMessage {
-        border-radius: 10px;
-        padding: 15px;
-        margin: 10px 0;
-    }
-    .element-container:has(> .stMarkdown:empty) {
-        display: none;
-    }
-</style>
-""", unsafe_allow_html=True)
+# --------------------------------------------------
+# COLORS (SMU STYLE)
+# --------------------------------------------------
+SMU_BLUE = "#354CA1"
+SMU_RED = "#CC0035"
 
-try:
-    api_key = st.secrets["OPENAI_API_KEY"]
-except:
-    api_key = ""
+# --------------------------------------------------
+# GLOBAL STYLES
+# --------------------------------------------------
+st.markdown(
+    f"""
+    <style>
+        body {{
+            background-color: white;
+        }}
+        .main-title {{
+            font-size: 44px;
+            font-weight: 700;
+            color: {SMU_BLUE};
+            margin-bottom: 0.3em;
+        }}
+        .subtitle {{
+            font-size: 20px;
+            color: #444444;
+            margin-bottom: 2em;
+            max-width: 900px;
+        }}
+        .section-title {{
+            font-size: 28px;
+            font-weight: 600;
+            color: {SMU_BLUE};
+            margin-top: 1.8em;
+        }}
+        .info-box {{
+            background-color: #F8F9FB;
+            border-left: 6px solid {SMU_RED};
+            padding: 1.5em;
+            margin-top: 1.5em;
+            max-width: 900px;
+        }}
+        .feature-title {{
+            font-size: 20px;
+            font-weight: 600;
+            color: {SMU_BLUE};
+            margin-bottom: 0.3em;
+        }}
+        .feature-text {{
+            font-size: 16px;
+            color: #333333;
+            margin-bottom: 1.5em;
+        }}
+        .footer {{
+            margin-top: 5em;
+            font-size: 14px;
+            color: #777777;
+        }}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-client = OpenAI(api_key=api_key)
+# --------------------------------------------------
+# SIDEBAR NAVIGATION
+# --------------------------------------------------
+with st.sidebar:
+    st.markdown("### SMU Cox AI Portal")
+    st.markdown("---")
 
-def extract_text_from_file(uploaded_file):
-    if uploaded_file is None:
-        return ""
-    if uploaded_file.name.lower().endswith(".pdf"):
-        text = "" 
-        with pdfplumber.open(uploaded_file) as pdf:
-            for page in pdf.pages:
-                text += page.extract_text() or ""
-        return text.strip()
-    elif uploaded_file.name.lower().endswith(".txt"):
-        return uploaded_file.read().decode("utf-8", errors="ignore")
-    return ""
-
-
-def extract_roles_and_people(case_text):
-    system_prompt = """
-You are an expert case-study analyzer.
-
-Extract ONLY the meaningful human roles in the case study.
-
-VALID ROLES TO RETURN:
-1. Named individuals (e.g., Maya, Jordan)
-2. Essential operational human roles explicitly mentioned (e.g., Barista)
-
-DO NOT RETURN:
-- Customer / customers
-- Mobile order customers
-- POS operators
-- Cashier (unless explicitly named as a character)
-- Inventory managers (unless named)
-- Quality check staff
-- Any system/device role
-- Any implied generic role
-
-RETURN STRICT JSON ONLY:
-
-{
-  "roles": [
-    {"name": "Person Name or Role", "title": "Their Title"}
-  ]
-}
-
-RULES:
-- If a name & title appear:
-      "Maya, the owner" → {"name": "Maya", "title": "Owner"}
-- If only a role appears and it's valid (Barista):
-      {"name": "Barista", "title": "Barista"}
-
-DO NOT include customers or other generic roles.
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": case_text}
-        ]
+    page = st.radio(
+        "Navigation",
+        ["Home", "Question Generator", "Rubric Generator"],
+        label_visibility="collapsed"
     )
 
-    raw = response.choices[0].message.content.strip()
+    st.markdown("---")
+    st.caption("SMU Cox School of Business")
 
-    try:
-        data = json.loads(raw)
-        return data["roles"]
-    except:
-        return [{"name": "General Role", "title": "General Role"}]
+# --------------------------------------------------
+# HOME PAGE
+# --------------------------------------------------
+if page == "Home":
+    st.markdown('<div class="main-title">SMU Cox AI Teaching Tools</div>', unsafe_allow_html=True)
 
+    st.markdown(
+        '<div class="subtitle">'
+        'This platform provides AI-powered tools designed to support faculty in course design, '
+        'assessment development, and instructional planning. The tools are intended to enhance '
+        'teaching workflows while maintaining academic rigor and institutional standards.'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
-def build_system_prompt(role, case_text):
-    return f"""
-You are **{role['name']} ({role['title']})**.
+    st.markdown(
+        '<div class="info-box">'
+        '<div class="feature-title">Purpose</div>'
+        '<div class="feature-text">'
+        'These tools assist instructors in generating high-quality academic materials efficiently, '
+        'allowing more time for meaningful engagement with students.'
+        '</div>'
 
-INTRODUCTION RULE:
-If the user greets you or asks who you are, you MUST:
-- Introduce yourself (name + title)
-- Describe your responsibilities based on the case study
-- Explain your concerns, priorities, and involvement
+        '<div class="feature-title">Responsible Use</div>'
+        '<div class="feature-text">'
+        'AI-generated outputs are intended as starting points and should be reviewed and refined '
+        'by faculty to ensure alignment with course objectives and academic standards.'
+        '</div>'
 
-Use only facts from the case study.
+        '<div class="feature-title">Available Tools</div>'
+        '<div class="feature-text">'
+        'Use the navigation menu on the left to access individual tools.'
+        '</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
-CASE STUDY:
-{case_text}
-"""
+# --------------------------------------------------
+# QUESTION GENERATOR
+# --------------------------------------------------
+if page == "Question Generator":
+    st.markdown('<div class="main-title">Question Generator</div>', unsafe_allow_html=True)
 
+    st.markdown(
+        '<div class="subtitle">'
+        'Generate academic questions aligned with course topics, learning depth, and assessment format.'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
-def get_role_description(role, case_text):
-    system_prompt = f"""
-You are analyzing a case study to provide a brief description of a specific role.
+    topic = st.text_input("Course topic", placeholder="e.g., Financial Risk Management")
+    level = st.selectbox("Difficulty level", ["Introductory", "Intermediate", "Advanced"])
+    q_type = st.selectbox("Question type", ["Multiple Choice", "Short Answer", "Essay"])
+    num_questions = st.slider("Number of questions", 1, 10, 5)
 
-Role: {role['name']} ({role['title']})
+    if st.button("Generate Questions"):
+        with st.spinner("Generating questions..."):
+            prompt = f"""
+            Create {num_questions} {q_type} questions for a {level} level course.
+            Topic: {topic}
 
-Based on the case study, provide a 2-3 sentence description of this role that includes:
-1. Their main responsibilities or position
-2. Their key challenges or concerns in the case
-3. Their relevance to the scenario
-
-Keep it concise and factual. Return ONLY the description text, no extra formatting.
-"""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": case_text}
-            ]
-        )
-        return response.choices[0].message.content.strip()
-    except:
-        return f"{role['name']} is a key stakeholder in this case study."
-
-
-def get_case_summary(case_text):
-    system_prompt = """
-You are analyzing a case study to provide a brief overview.
-
-Provide a 2-3 sentence summary that captures:
-1. The main situation or context
-2. The primary challenge or issue
-3. What needs to be addressed
-
-Keep it concise and neutral. Return ONLY the summary text, no extra formatting.
-"""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": case_text}
-            ]
-        )
-        return response.choices[0].message.content.strip()
-    except:
-        return "A business case study scenario requiring analysis and decision-making."
-
-
-def export_chat_to_pdf(role_name, chat_history):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
-    
-    title = f"Chat with {role_name}"
-    pdf.cell(0, 10, title.encode('latin-1', 'replace').decode('latin-1'), ln=True, align="C")
-    pdf.set_font("Arial", "", 10)
-    pdf.cell(0, 10, f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align="C")
-    pdf.ln(10)
-    
-    pdf.set_font("Arial", "", 11)
-    for msg in chat_history:
-        role = "You" if msg["role"] == "user" else role_name.encode('latin-1', 'replace').decode('latin-1')
-        pdf.set_font("Arial", "B", 11)
-        pdf.multi_cell(0, 8, f"{role}:")
-        pdf.set_font("Arial", "", 11)
-        content = msg["content"].encode('latin-1', 'replace').decode('latin-1')
-        pdf.multi_cell(0, 6, content)
-        pdf.ln(5)
-    
-    return pdf.output(dest="S").encode("latin-1", errors="replace")
-
-
-if "case_study_text" not in st.session_state:
-    st.session_state.case_study_text = ""
-
-if "roles" not in st.session_state:
-    st.session_state.roles = []
-
-if "selected_role" not in st.session_state:
-    st.session_state.selected_role = None
-
-if "role_chats" not in st.session_state:
-    st.session_state.role_chats = {}
-
-if "roles_extracted" not in st.session_state:
-    st.session_state.roles_extracted = False
-
-if "role_descriptions" not in st.session_state:
-    st.session_state.role_descriptions = {}
-
-if "case_summary" not in st.session_state:
-    st.session_state.case_summary = ""
-
-if "pdf_data" not in st.session_state:
-    st.session_state.pdf_data = None
-
-if "pdf_filename" not in st.session_state:
-    st.session_state.pdf_filename = ""
-
-
-left, center, right = st.columns([1, 2, 1])
-
-with right:
-    st.markdown("<h2>Case Study</h2>", unsafe_allow_html=True)
-
-    upload = st.file_uploader("Upload Case Study", type=["pdf", "txt"], key="file_uploader")
-    manual = st.text_area("Or paste case study text", height=200, key="manual_text")
-
-    if st.button("📚 Load & Extract Roles", use_container_width=True, type="primary"):
-        case_text = ""
-        
-        if upload:
-            case_text = extract_text_from_file(upload)
-        elif manual.strip():
-            case_text = manual.strip()
-        
-        if case_text:
-            st.session_state.case_study_text = case_text
-            
-            if not st.session_state.roles_extracted:
-                with st.spinner("Extracting roles and analyzing case study..."):
-                    st.session_state.roles = extract_roles_and_people(case_text)
-                    st.session_state.roles_extracted = True
-                    
-                    if st.session_state.roles:
-                        st.session_state.case_summary = get_case_summary(case_text)
-                        
-                        for r in st.session_state.roles:
-                            label = f"{r['name']} ({r['title']})"
-                            st.session_state.role_descriptions[label] = get_role_description(r, case_text)
-                            
-                            if label not in st.session_state.role_chats:
-                                st.session_state.role_chats[label] = []
-                        
-                        st.session_state.selected_role = st.session_state.roles[0]
-                
-                st.success(f"✅ Loaded! Found {len(st.session_state.roles)} roles.")
-                st.rerun()
-        else:
-            st.error("Please upload a file or paste text first!")
-
-    if st.session_state.case_study_text and st.session_state.roles:
-        st.markdown("---")
-        
-        st.markdown("**📋 Case Study Overview:**")
-        st.markdown(st.session_state.case_summary)
-        
-        st.markdown("---")
-        
-        if st.button("🔄 Reset All & Load New Case", use_container_width=True):
-            st.session_state.case_study_text = ""
-            st.session_state.roles = []
-            st.session_state.selected_role = None
-            st.session_state.role_chats = {}
-            st.session_state.roles_extracted = False
-            st.session_state.role_descriptions = {}
-            st.session_state.case_summary = ""
-            st.rerun()
-
-
-with left:
-    st.markdown("<div class='left-panel'>", unsafe_allow_html=True)
-    st.markdown("<h2>👥 Available Roles</h2>", unsafe_allow_html=True)
-    
-    if st.session_state.roles:
-        st.markdown(f"**{len(st.session_state.roles)} roles found**")
-        st.markdown("---")
-        
-        for r in st.session_state.roles:
-            label = f"{r['name']} ({r['title']})"
-            selected = (st.session_state.selected_role == r)
-            
-            if selected:
-                btn_type = "primary"
-                btn_label = f"✅ {label}"
-            else:
-                btn_type = "secondary"
-                btn_label = label
-
-            if st.button(btn_label, use_container_width=True, key=f"role_btn_{label}", type=btn_type):
-                st.session_state.selected_role = r
-
-                if label not in st.session_state.role_chats:
-                    st.session_state.role_chats[label] = []
-                
-                st.rerun()
-        
-        st.markdown("---")
-        if st.session_state.selected_role:
-            current_label = f"{st.session_state.selected_role['name']} ({st.session_state.selected_role['title']})"
-            st.markdown(f"**👤 About {st.session_state.selected_role['name']}:**")
-            if current_label in st.session_state.role_descriptions:
-                st.markdown(st.session_state.role_descriptions[current_label])
-    else:
-        st.info("Load a case study to see available roles")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-with center:
-
-    st.markdown("<h1>SMU COX Case Study Bot</h1>", unsafe_allow_html=True)
-
-    if st.session_state.selected_role and st.session_state.roles:
-        current_label = f"{st.session_state.selected_role['name']} ({st.session_state.selected_role['title']})"
-        
-        if current_label not in st.session_state.role_chats:
-            st.session_state.role_chats[current_label] = []
-
-        st.markdown("<div class='role-header'>", unsafe_allow_html=True)
-        
-        col1, col2, col3 = st.columns([2, 1, 1])
-        
-        with col1:
-            st.markdown(f"### 💬 Talking to: **{current_label}**")
-        
-        with col2:
-            if st.button("📄 Export PDF", use_container_width=True, key="export_btn"):
-                if st.session_state.role_chats[current_label]:
-                    pdf_bytes = export_chat_to_pdf(current_label, st.session_state.role_chats[current_label])
-                    st.session_state.pdf_data = pdf_bytes
-                    st.session_state.pdf_filename = f"chat_{current_label.replace(' ', '_').replace('(', '').replace(')', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-                else:
-                    st.warning("No messages to export")
-            
-            if "pdf_data" in st.session_state and st.session_state.pdf_data:
-                st.download_button(
-                    label="⬇️ Download PDF",
-                    data=st.session_state.pdf_data,
-                    file_name=st.session_state.pdf_filename,
-                    mime="application/pdf",
-                    key="download_pdf",
-                    use_container_width=True
-                )
-        
-        with col3:
-            if st.button("🔄 Reset", use_container_width=True, key="reset_btn"):
-                st.session_state.role_chats[current_label] = []
-                st.rerun()
-        
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("---")
-
-        for msg in st.session_state.role_chats[current_label]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        user_input = st.chat_input("Ask something...")
-
-        if user_input:
-            st.session_state.role_chats[current_label].append({"role": "user", "content": user_input})
-
-            with st.chat_message("user"):
-                st.markdown(user_input)
-
-            prompt = build_system_prompt(st.session_state.selected_role, st.session_state.case_study_text)
+            If multiple choice, include 4 options and clearly mark the correct answer.
+            """
 
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[{"role": "system", "content": prompt}] + st.session_state.role_chats[current_label]
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7
             )
 
-            reply = response.choices[0].message.content
-            st.session_state.role_chats[current_label].append({"role": "assistant", "content": reply})
+            st.markdown("### Generated Questions")
+            st.write(response.choices[0].message.content)
 
-            with st.chat_message("assistant"):
-                st.markdown(reply)
+# --------------------------------------------------
+# RUBRIC GENERATOR
+# --------------------------------------------------
+if page == "Rubric Generator":
+    st.markdown('<div class="main-title">Rubric Generator</div>', unsafe_allow_html=True)
 
-    elif not st.session_state.case_study_text:
-        st.info("👉 Please upload or paste a case study in the right panel to get started.")
-    else:
-        st.info("👈 Select a role from the left panel to start chatting.")
+    st.markdown(
+        '<div class="subtitle">'
+        'Create structured grading rubrics that clearly define performance expectations and evaluation criteria.'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    assignment = st.text_input("Assignment name", placeholder="e.g., Strategy Case Analysis")
+    criteria = st.text_area(
+        "Evaluation criteria (comma-separated)",
+        placeholder="Clarity, Depth of Analysis, Organization, Use of Evidence"
+    )
+    scale = st.selectbox(
+        "Grading scale",
+        ["Excellent / Good / Fair / Poor", "4-point scale", "Percentage-based"]
+    )
+
+    if st.button("Generate Rubric"):
+        with st.spinner("Generating rubric..."):
+            prompt = f"""
+            Create a grading rubric for the assignment titled "{assignment}".
+
+            Evaluation criteria:
+            {criteria}
+
+            Use this grading scale:
+            {scale}
+
+            Format the rubric clearly with criteria and performance descriptions.
+            """
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.6
+            )
+
+            st.markdown("### Generated Rubric")
+            st.write(response.choices[0].message.content)
+
+# --------------------------------------------------
+# FOOTER
+# --------------------------------------------------
+st.markdown(
+    '<div class="footer">© SMU Cox School of Business · Internal AI Tools Prototype</div>',
+    unsafe_allow_html=True
+)
