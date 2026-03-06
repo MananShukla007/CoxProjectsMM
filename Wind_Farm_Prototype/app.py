@@ -1,623 +1,572 @@
-import streamlit as st
-from openai import OpenAI
-import pdfplumber
-from fpdf import FPDF
-import time
-from datetime import datetime
+import subprocess
+import sys
+
+# Ensure openai is installed
+try:
+    from openai import OpenAI
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai>=1.0.0"])
+    from openai import OpenAI
+
+import gradio as gr
 import os
 
-# =========================================================
-# =========================================================
-OPENAI_KEY = ""  # <-- replace with your real key
+# Get and clean the API key
+openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+client = OpenAI(api_key=openai_api_key)
 
-# =========================================================
-# App Config
-# =========================================================
-st.set_page_config(
-    page_title="Delta Wind Farm • Sarah PM Bot",
-    page_icon="🌬️",
-    layout="wide",
-)
+# Case Study Context - This is the knowledge base for all agents
+CASE_STUDY_CONTEXT = """
+# Delta Wind Farm Project - Case Study Context
 
-# =========================================================
-# Theme
-# =========================================================
-SMU_BLUE = "#0033A0"
-ACCENT = "#2F6BFF"
-BG = "#F4F7FF"
-TEXT = "#0F172A"
-MUTED = "#475569"
+## Project Overview
+- Phase II expansion: 50 turbines with onshore fabrication and offshore installation
+- Hard deadline: June 30 (tied to Series B investor covenant)
+- Missing deadline triggers financing freeze and reputational damage
+- Project Manager: Sarah Chen
 
-# =========================================================
-# =========================================================
-st.markdown(
-    f"""
-<style>
-  /* App background */
-  .stApp {{
-    background: radial-gradient(1200px 600px at 20% 0%, #EAF0FF 0%, {BG} 55%, #F7FAFF 100%);
-    color: {TEXT};
-  }}
+## Activities (12 Total)
+| Code | Activity | Site | Description | Most-Likely (days) | Best | Worst |
+|------|----------|------|-------------|-------------------|------|-------|
+| A1 | Access road and grading | Onshore | Prepare land routes, drainage | 8 | 6 | 12 |
+| A2 | Offshore platform prep | Offshore | Dredging, seabed stabilization | 9 | 7 | 13 |
+| A3 | Foundation fabrication | Onshore | Pour concrete, embed rebar | 12 | 10 | 16 |
+| A4 | Foundation installation | Offshore | Transport and mount foundations | 11 | 9 | 14 |
+| A5 | Turbine shipment and staging | Onshore | Receive/inspect components | 8 | 6 | 10 |
+| A6 | Tower assembly | Offshore | Erect towers using barge cranes | 10 | 8 | 15 |
+| A7 | Nacelle and blade installation | Offshore | Mount nacelles and blades | 9 | 7 | 12 |
+| A8 | Subsea cabling | Offshore | Lay/bury array cables; pull-ins | 13 | 10 | 18 |
+| A9 | Onshore grid substation | Onshore | Build substation, protection | 10 | 8 | 13 |
+| A10 | System integration and testing | Both | Synchronize systems | 8 | 6 | 11 |
+| A11 | Environmental and safety inspection | Both | OSHA/Coast Guard clearance | 6 | 5 | 9 |
+| A12 | Investor report and media release | Onshore | Final report; announcement | 4 | 3 | 6 |
 
-  /* DO NOT lock html/body to overflow hidden (this causes blank pages on Streamlit Cloud) */
-  html, body {{
-    height: 100%;
-    overflow: auto !important;
-  }}
+## Dependencies (Network Logic)
+- A1 then A3 (access/yard readiness precedes fabrication)
+- A2 then A4 (offshore platform prep precedes installation)
+- A3 and A2 then A4 (need fabricated bases and prepped seabed)
+- A4 and A5 then A6 (installed foundations + staged components gate tower assembly)
+- A6 then A7 (towers before nacelle/blades)
+- A6 then A8 (start A8 after first towers for as-built data)
+- **Coupling Risk: A6 and A8 are coupled**: 30% chance of rework loop adding +4 days to A8
+- A8 and A9 then A10 (both cables and substation must exist to integrate)
+- A10 then A11 then A12 (test, inspect, then report/launch)
+- Regulatory paperwork gate: must be approved before A6/A8 commence; otherwise +5 days halt
 
-  /* Lock Streamlit view container safely */
-  div[data-testid="stAppViewContainer"] {{
-    height: 100vh;
-    overflow: hidden;
-  }}
+## Baseline Costs
+| Activity | Cost (USD thousands) |
+|----------|----------------|
+| A1 | 120 |
+| A2 | 180 |
+| A3 | 420 |
+| A4 | 560 |
+| A5 | 260 |
+| A6 | 700 |
+| A7 | 520 |
+| A8 | 840 |
+| A9 | 640 |
+| A10 | 300 |
+| A11 | 160 |
+| A12 | 90 |
+| **Total** | **4,090** |
 
-  /* Main block container */
-  div[data-testid="stMainBlockContainer"] {{
-    padding-top: 0.9rem;
-    padding-bottom: 0.8rem;
-    height: 100vh;
-    overflow: hidden;
-  }}
+## Financial Constraints
+- Contingency available: $400,000
+- Delay burn: $3,000/day beyond June 30
+- Early completion: No savings (resources pre-contracted)
+- CEO Policy: Only ONE acceleration option allowed
 
-  /* Pane shells */
-  .pane {{
-    border: 1px solid rgba(0,0,0,0.06);
-    background: linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(255,255,255,0.96) 100%);
-    border-radius: 18px;
-    box-shadow:
-      0 10px 30px rgba(0, 18, 70, 0.10),
-      0 2px 10px rgba(0, 18, 70, 0.06);
-    height: calc(100vh - 2.2rem);
-    overflow: hidden;
-    position: relative;
-    backdrop-filter: blur(8px);
-  }}
+## Crash (Acceleration) Options
+| Option | Activity | Time Saved | Cost | Rationale/Risk |
+|--------|----------|------------|------|----------------|
+| S1 | A3 (foundation) | 3 days | $70k | Add second batch team; coordination risk |
+| S2 | A5 (turbine staging) | 4 days | $110k | Charter faster feeder; unlocks A6 earlier |
+| S3 | A6 (tower assembly) | 5 days | $150k | Second crane crew + barge; QA holds advised |
+| S4 | A8 (subsea cabling) | 4 days | $130k | ROV-assisted lay; weather-sensitive |
+| S5 | A9 (substation) | 3 days | $60k | Overtime electrical crew; manageable |
 
-  .pane-header {{
-    padding: 14px 14px 12px 14px;
-    border-bottom: 1px solid rgba(0,0,0,0.06);
-    background: linear-gradient(90deg, rgba(0,51,160,0.10), rgba(47,107,255,0.06));
-  }}
+## Key Risks
+1. A6-A8 coupling: 30% probability of +4 days rework if tower tolerances are off
+2. Regulatory paperwork gate: +5 days halt if not cleared before A6/A8
+3. Weather windows: 10-15% variability for offshore work
+4. Customs risk (A5): documentation errors can add 1-2 days
+"""
 
-  .pane-body {{
-    padding: 12px 14px;
-    height: calc(100% - 58px);
-    overflow-y: auto;
-  }}
+# Agent definitions with their roles and expertise
+AGENTS = {
+    "sam": {
+        "name": "Sam Patel",
+        "role": "Construction Manager (Onshore)",
+        "avatar": "Worker",
+        "expertise": ["A1 Access Roads", "A3 Foundation Fabrication", "A9 Substation"],
+        "system_prompt": f"""You are Sam Patel, Construction Manager for onshore operations at Delta Wind Farm.
 
-  /* Buttons */
-  button[kind="primary"] {{
-    background: linear-gradient(90deg, {SMU_BLUE}, {ACCENT}) !important;
-    color: white !important;
-    border: 0 !important;
-    box-shadow: 0 12px 24px rgba(0,51,160,0.20);
-  }}
+{CASE_STUDY_CONTEXT}
 
-  /* Notes / Cards */
-  .note {{
-    padding: 10px 12px;
-    border-radius: 14px;
-    border: 1px solid rgba(0,0,0,0.06);
-    background: rgba(248,250,255,0.85);
-    box-shadow: 0 8px 18px rgba(0, 18, 70, 0.05);
-    white-space: pre-wrap;
-  }}
+Your expertise covers:
+- A1: Access road and grading (8 days most likely, 6 best, 12 worst)
+- A3: Foundation fabrication (12 days most likely, 10 best, 16 worst) - this is the "long pole" onshore, constrained by concrete batch capacity
+- A9: Onshore grid substation (10 days most likely, 8 best, 13 worst)
 
-  .muted {{
-    color: {MUTED};
-    font-size: 0.92rem;
-  }}
+Key knowledge you have:
+- A1 is under control, straightforward site prep
+- A3 is constrained by concrete batch plant capacity - can only run one batch team at a time
+- Crash option S1 ($70k) adds second batch team to save 3 days on A3, but introduces coordination risk
+- Crash option S5 ($60k) uses overtime crew to save 3 days on A9
+- A1 must complete before A3 can start (need access roads for concrete trucks)
+- A3 completion feeds into A4 offshore - any lag cascades to A4/A6 readiness
+- A6 cannot start without A3 foundations fabricated, A4 foundations installed, AND A5 components staged
 
-  /* Chat */
-  .chat-wrap {{
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-  }}
+Personality: Practical, focused on field operations, speaks from experience. You focus on execution, not strategy - that is the PM's job.
 
-  .chat-scroll {{
-    height: calc(100% - 132px);
-    overflow-y: auto;
-    padding: 14px 14px;
-  }}
+Respond naturally as Sam would in a conversation with Sarah Chen (the PM). Be helpful but stay in character. Give specific data when asked. If asked about areas outside your expertise, redirect to the appropriate person."""
+    },
+    "rita": {
+        "name": "Rita Gomez",
+        "role": "Procurement and Logistics",
+        "avatar": "Package",
+        "expertise": ["A5 Turbine Shipment", "Supply Chain", "Marine Freight"],
+        "system_prompt": f"""You are Rita Gomez, Procurement and Logistics Manager at Delta Wind Farm.
 
-  .bubble {{
-    max-width: 82%;
-    padding: 10px 12px;
-    border-radius: 16px;
-    margin: 8px 0;
-    border: 1px solid rgba(0,0,0,0.06);
-    box-shadow: 0 10px 24px rgba(0, 18, 70, 0.06);
-    background: rgba(255,255,255,0.94);
-    line-height: 1.35;
-    white-space: pre-wrap;
-  }}
-  .bubble.user {{
-    margin-left: auto;
-    background: linear-gradient(180deg, rgba(47,107,255,0.14), rgba(255,255,255,0.96));
-    border-color: rgba(47,107,255,0.18);
-  }}
-  .bubble.assistant {{
-    margin-right: auto;
-  }}
+{CASE_STUDY_CONTEXT}
 
-  .chat-inputbar {{
-    border-top: 1px solid rgba(0,0,0,0.06);
-    padding: 12px 14px;
-    background: linear-gradient(180deg, rgba(255,255,255,0.65), rgba(255,255,255,0.95));
-  }}
+Your expertise covers:
+- A5: Turbine shipment and staging (8 days most likely, 6 best, 10 worst)
+- Supply chain management
+- Marine freight and customs
 
-  .section-title {{
-    font-weight: 900;
-    margin: 6px 0 8px 0;
-  }}
-</style>
-""",
-    unsafe_allow_html=True,
-)
+Key knowledge you have:
+- A5 staging will be about a week short if using main vessel
+- Crash option S2 ($110k) charters a faster cargo feeder for first 5 turbine sets
+- S2 gets components to yard 4 days earlier, which unlocks A6 start sooner
+- S2 does not shorten A5 duration much, but advances when A6 can begin - the value is in shifting the gate
+- Customs clearance is smooth if documentation is flawless; any mismatch = 24-48 hour delays
+- Main vessel is contracted and on schedule but takes standard route
+- Tracking volatility in shipping lanes - port capacity constraints, vessel scheduling conflicts
 
-# =========================================================
-# OpenAI client + retry wrapper
-# =========================================================
-def make_client(api_key: str) -> OpenAI:
-    return OpenAI(api_key=api_key, timeout=45.0, max_retries=3)
+Personality: Defensive but organized about freight issues. You explain logistics trade-offs clearly. You are logistics, not project planning - you cannot tell Sarah which crash option is best overall.
 
-def call_chat_completion(client: OpenAI, *, model: str, messages):
-    last_err = None
-    for attempt in range(1, 4):
-        try:
-            return client.chat.completions.create(model=model, messages=messages)
-        except Exception as e:
-            last_err = e
-            time.sleep(0.6 * (2 ** (attempt - 1)))
-    raise last_err
+Respond naturally as Rita would. Be helpful but stay in character. Give specific data when asked."""
+    },
+    "maya": {
+        "name": "Maya Li",
+        "role": "Engineering Lead (Offshore)",
+        "avatar": "Gear",
+        "expertise": ["A6 Tower Assembly", "A8 Subsea Cabling", "A6-A8 Coupling"],
+        "system_prompt": f"""You are Maya Li, Engineering Lead for offshore operations at Delta Wind Farm.
 
-def friendly_connection_help(err: Exception) -> str:
-    msg = str(err) or err.__class__.__name__
-    return (
-        "OpenAI API connection failed.\n\n"
-        "Try:\n"
-        "• Check internet\n"
-        "• Disable VPN temporarily\n"
-        "• Update SDK: `pip install -U openai`\n\n"
-        f"Details: {msg}"
-    )
+{CASE_STUDY_CONTEXT}
 
-# =========================================================
-# Fixed Case Study Loader
-# =========================================================
-def load_case_text() -> str:
-    """
-    Looks for the PDF in common deploy locations:
-    1) same folder as app.py
-    2) ./data/
-    3) /mnt/data/ (this environment)
-    """
-    candidates = [
-        "The Delta Wind Farm Project.pdf",
-        os.path.join("data", "The Delta Wind Farm Project.pdf"),
-        "/mnt/data/The Delta Wind Farm Project.pdf",
+Your expertise covers:
+- A6: Tower assembly (10 days most likely, 8 best, 15 worst) - weather-dependent, uses barge-mounted cranes
+- A7: Nacelle and blade installation (9 days most likely, 7 best, 12 worst)
+- A8: Subsea cabling (13 days most likely, 10 best, 18 worst)
+- The critical A6-A8 coupling risk
+
+Key knowledge you have:
+- A6 and A8 are tightly coupled engineering-wise
+- A8 typically starts after first towers are up to get accurate as-built data for cable pull-in angles
+- J-tubes on towers must align precisely with cable routing
+- **30% probability of rework loop adding +4 days to A8** based on historical data (3 of last 10 projects had issues)
+- Crash option S3 ($150k) brings second crane crew + barge, saves 5 days on A6
+- S3 INCREASES alignment risk unless QA hold points are enforced - you would want inspection after every 10 turbines
+- Crash option S4 ($130k) uses ROV-assisted cable laying, saves 4 days on A8, but weather-sensitive
+- A6 cannot start until BOTH A4 foundations are installed AND A5 components are staged
+
+Personality: Technical, draws sketches to explain, concerned about quality and engineering tolerances. You give engineering recommendations but acknowledge project management decisions are Sarah's call.
+
+Respond naturally as Maya would. Be helpful but stay in character. Emphasize the coupling risk - it is important!"""
+    },
+    "leo": {
+        "name": "Leo Armstrong",
+        "role": "Finance Director",
+        "avatar": "Money",
+        "expertise": ["Budget", "Contingency", "Cost Policy"],
+        "system_prompt": f"""You are Leo Armstrong, Finance Director at Delta Wind Farm.
+
+{CASE_STUDY_CONTEXT}
+
+Your expertise covers:
+- Budget management and contingency
+- Cost policy and financial constraints
+- Delay penalties
+
+Key knowledge you have:
+- Contingency budget: $400,000
+- Baseline project cost: $4.09 million
+- Total authorization with contingency: $4.49 million
+- Delay burn: $3,000/day beyond June 30 (vessel standby, overhead, liquidated damages)
+- NO savings for early completion - resources are pre-contracted on time-and-materials basis
+- **CEO POLICY: Only ONE premium acceleration option allowed, not multiple**
+- This policy exists because stacking crash options creates coordination chaos and usually does not deliver expected savings
+- If Sarah proposes multiple accelerations, you will block budget authorization
+
+Crash option costs:
+- S1 (A3): $70k saves 3 days
+- S2 (A5): $110k saves 4 days  
+- S3 (A6): $150k saves 5 days
+- S4 (A8): $130k saves 4 days
+- S5 (A9): $60k saves 3 days
+
+Cost exposure calculation: baseline + crash option + potential delay penalties
+
+Personality: Brief, policy-focused, enforces rules. You are finance, not project planning - you do not tell Sarah which option to pick, but you explain the financial framework clearly.
+
+Respond naturally as Leo would. Be helpful but enforce the one-crash-only policy firmly."""
+    },
+    "carlos": {
+        "name": "Carlos Ruiz",
+        "role": "Regulatory Compliance",
+        "avatar": "Clipboard",
+        "expertise": ["A11 Inspection", "OSHA", "Coast Guard"],
+        "system_prompt": f"""You are Carlos Ruiz, Regulatory Compliance Manager at Delta Wind Farm.
+
+{CASE_STUDY_CONTEXT}
+
+Your expertise covers:
+- A11: Final inspection (6 days most likely, 5 best, 9 worst)
+- OSHA compliance (onshore)
+- Coast Guard compliance (offshore)
+- Regulatory paperwork gates
+
+Key knowledge you have:
+- A11 requires BOTH OSHA sign-off (onshore) AND Coast Guard clearance (offshore)
+- Joint inspection penciled in for week of June 24
+- **CRITICAL: Interim regulatory paperwork gate exists** (not shown as explicit activity)
+- Updated method statements, safety plans, cable-lay risk assessments must be approved BEFORE A6/A8 can start
+- If paperwork is not cleared, regulators can freeze field work for +5 days minimum
+- This has happened before - it is not theoretical
+- If Sarah prioritizes getting documents this week, you can process approvals in parallel with A1/A2
+- If she waits until A5 completes, there will be a hard 5-day stop before offshore work
+
+Mitigation recommendations:
+1. Get paperwork revisions immediately - clear during A1/A2
+2. Enforce strict QA hold points during A6/A8
+3. Conduct pre-inspection walkthrough before formal A11
+
+Personality: Speaks slowly and deliberately, conservative but accurate about regulatory timing. You have seen projects get frozen and want to prevent that.
+
+Respond naturally as Carlos would. Emphasize the paperwork gate risk - most PMs miss it!"""
+    },
+    "ava": {
+        "name": "Ava Johnson",
+        "role": "CEO / Sponsor",
+        "avatar": "Briefcase",
+        "expertise": ["Strategic Direction", "Investor Relations", "Executive Decision"],
+        "system_prompt": f"""You are Ava Johnson, CEO and Project Sponsor at Delta Renewables.
+
+{CASE_STUDY_CONTEXT}
+
+Your role:
+- Executive sponsor of the Delta Wind Farm project
+- Responsible to investors and board
+- Final approval authority on the plan
+
+Key points you make:
+- **June 30 is absolutely non-negotiable** - it is in the Series B investor covenant
+- Missing it triggers automatic financing freeze on remaining tranches
+- Cannot fund Phase III if we miss, plus reputational damage with capital partners
+- June 29 or June 30 = win. July 1 = disaster affecting entire company.
+- **Pick ONE acceleration lever, not multiple** - learned this lesson on Phase I
+- Stacking crash options creates resource conflicts and coordination overhead
+- Need proof Sarah has identified the REAL bottleneck
+
+What you need from Sarah:
+- A coherent network with interdependencies
+- A risk-aware finish date with confidence level (not fantasy schedule)
+- Single acceleration choice with defense of why it is highest leverage
+- One-page executive memo with: recommendation, timeline, cost exposure, top 3 risks with mitigations
+
+Maya's A6-A8 coupling concern is real - got burned by exactly that on Phase I, cost 6 days and $200k.
+If crashing A6 with S3, must address increased rework probability with QA hold points.
+
+Personality: Blunt, time-pressured, strategic thinker. You have about 10 minutes. You will not tell Sarah which option to pick - that is her job as PM. But you will back a well-analyzed decision.
+
+Respond naturally as Ava would. Be direct and executive-level."""
+    }
+}
+
+# Conversation history for each agent
+conversation_histories = {agent_id: [] for agent_id in AGENTS}
+
+def get_ai_response(agent_id, user_message):
+    """Get AI-generated response for the agent"""
+    agent = AGENTS[agent_id]
+    
+    # Build messages for the API call
+    messages = [
+        {"role": "system", "content": agent["system_prompt"]}
     ]
-
-    for path in candidates:
-        try:
-            if os.path.exists(path):
-                text = ""
-                with pdfplumber.open(path) as pdf:
-                    for page in pdf.pages:
-                        text += (page.extract_text() or "") + "\n"
-                text = text.strip()
-                if text:
-                    return text
-        except Exception:
-            continue
-
-    # Fallback excerpt if PDF isn't found
-    return (
-        "The Delta Wind Farm Project (fallback excerpt)\n\n"
-        "Sarah Chen, Project Manager for Delta Renewables, must replan Phase II to meet "
-        "a June 30 investor milestone. Phase II adds 50 turbines across onshore and offshore workstreams "
-        "with coupled risks (A6↔A8) and a regulatory paperwork gate that can cause a +5 day halt. "
-        "Team must pick ONE acceleration option (S1–S5)."
-    )
-
-# =========================================================
-# Sarah- prompts
-# =========================================================
-def sarah_system_prompt(case_text: str) -> str:
-    return f"""
-You are Sarah Chen, Project Manager for Delta Renewables (Delta Wind Farm Project Phase II).
-
-RULES:
-- Always speak as Sarah (PM).
-- Be practical and structured.
-- Keep answers short + decision-oriented.
-- Ask 1–2 questions back to the student to make them think.
-- Only use facts from the case. If missing, say what you’d need.
-
-CASE STUDY:
-{case_text}
-"""
-
-def insights_prompt(case_text: str) -> str:
-    return f"""
-Return concise, high-signal insights (bullets):
-- Critical path / gating dependencies
-- What June 30 actually constrains (inspection/report)
-- Hidden risks (regulatory gate, A6↔A8 loop, weather, customs)
-- Implications of "choose ONE crash option"
-
-Use only case facts. No fluff.
-
-CASE:
-{case_text}
-"""
-
-def problems_prompt(case_text: str) -> str:
-    return f"""
-Create a clean list:
-1) Problems (current issues/slips)
-2) Risks (uncertainties)
-3) Constraints (policy, milestone, dependencies)
-
-Each item 1 line. Only case facts.
-
-CASE:
-{case_text}
-"""
-
-def what_i_do_prompt(case_text: str) -> str:
-    return f"""
-You are Sarah Chen (PM). Explain in 8–12 crisp bullet points:
-- What your job is in THIS case
-- What you're accountable for by June 30
-- What decisions you must make (schedule, crash option, compliance)
-- What you need from stakeholders (Construction, Procurement, Engineering, Finance, Regulatory, CEO)
-
-Only case facts.
-
-CASE:
-{case_text}
-"""
-
-# =========================================================
-# =========================================================
-def export_chat_to_pdf(title: str, chat_history):
-    pdf = FPDF()
-    pdf.add_page()
-
-    pdf.set_font("Arial", "B", 16)
-    safe_title = title.encode("latin-1", "replace").decode("latin-1")
-    pdf.cell(0, 10, safe_title, ln=True, align="C")
-
-    pdf.set_font("Arial", "", 10)
-    pdf.cell(0, 8, f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align="C")
-    pdf.ln(8)
-
-    pdf.set_font("Arial", "", 11)
-    for msg in chat_history:
-        who = "You" if msg["role"] == "user" else "Sarah"
-        who = who.encode("latin-1", "replace").decode("latin-1")
-
-        pdf.set_font("Arial", "B", 11)
-        pdf.multi_cell(0, 7, f"{who}:")
-        pdf.set_font("Arial", "", 11)
-
-        content = (msg.get("content") or "").encode("latin-1", "replace").decode("latin-1")
-        pdf.multi_cell(0, 6, content)
-        pdf.ln(3)
-
-    return pdf.output(dest="S").encode("latin-1", errors="replace")
-
-# =========================================================
-# Session State
-# =========================================================
-if "client" not in st.session_state:
-    st.session_state.client = None
-if "case_text" not in st.session_state:
-    st.session_state.case_text = ""
-if "view" not in st.session_state:
-    st.session_state.view = "chat"  # chat | insights | problems | role
-if "chat" not in st.session_state:
-    st.session_state.chat = []
-if "insights" not in st.session_state:
-    st.session_state.insights = ""
-if "problems" not in st.session_state:
-    st.session_state.problems = ""
-if "role_info" not in st.session_state:
-    st.session_state.role_info = ""
-if "pdf_data" not in st.session_state:
-    st.session_state.pdf_data = None
-if "pdf_filename" not in st.session_state:
-    st.session_state.pdf_filename = ""
-
-def reset_app():
-    st.session_state.view = "chat"
-    st.session_state.chat = []
-    st.session_state.insights = ""
-    st.session_state.problems = ""
-    st.session_state.role_info = ""
-    st.session_state.pdf_data = None
-    st.session_state.pdf_filename = ""
-
-# =========================================================
-# Boot
-# =========================================================
-if not st.session_state.case_text:
-    st.session_state.case_text = load_case_text()
-
-key_ready = bool(OPENAI_KEY and OPENAI_KEY != "1234")
-if st.session_state.client is None and key_ready:
-    st.session_state.client = make_client(OPENAI_KEY)
-
-# =========================================================
-# 3-Pane Layout
-# =========================================================
-left, center, right = st.columns([1.05, 2.55, 1.20], gap="large")
-
-# ---------------- LEFT PANE ----------------
-with left:
-    st.markdown("<div class='pane'>", unsafe_allow_html=True)
-    st.markdown(
-        f"""
-<div class="pane-header">
-  <div style="display:flex;align-items:center;gap:10px;">
-    <div style="width:34px;height:34px;border-radius:12px;background:linear-gradient(180deg,{SMU_BLUE},{ACCENT});
-                display:flex;align-items:center;justify-content:center;color:white;font-weight:900;">🌬️</div>
-    <div>
-      <div style="font-weight:900;">Delta Wind Farm Bot</div>
-      <div class="muted">You are Sarah (PM)</div>
-    </div>
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<div class='pane-body'>", unsafe_allow_html=True)
-
-    if not key_ready:
-        st.warning("OPENAI_KEY is still '1234'. Replace it in code to enable AI buttons.")
-    else:
-        st.success("OpenAI key loaded from code ✅")
-
-    st.divider()
-
-    st.markdown("**Navigation**")
-    if st.button("💬 Chat (as Sarah)", use_container_width=True, type=("primary" if st.session_state.view == "chat" else "secondary")):
-        st.session_state.view = "chat"
-        st.rerun()
-
-    if st.button("💡 Insights", use_container_width=True, type=("primary" if st.session_state.view == "insights" else "secondary")):
-        st.session_state.view = "insights"
-        st.rerun()
-
-    if st.button("⚠️ Problems & Risks", use_container_width=True, type=("primary" if st.session_state.view == "problems" else "secondary")):
-        st.session_state.view = "problems"
-        st.rerun()
-
-    if st.button("🧑‍💼 What's your role / what do you do?", use_container_width=True, type=("primary" if st.session_state.view == "role" else "secondary")):
-        st.session_state.view = "role"
-        st.rerun()
-
-    st.divider()
-
-    c1, c2 = st.columns(2)
-    if c1.button("Reset", use_container_width=True):
-        reset_app()
-        st.rerun()
-
-    export_disabled = not bool(st.session_state.chat)
-    if c2.button("Export PDF", use_container_width=True, disabled=export_disabled):
-        pdf_bytes = export_chat_to_pdf("Chat with Sarah (Delta Wind Farm)", st.session_state.chat)
-        st.session_state.pdf_data = pdf_bytes
-        st.session_state.pdf_filename = f"delta_windfarm_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-
-    if st.session_state.pdf_data:
-        st.download_button(
-            label="Download PDF",
-            data=st.session_state.pdf_data,
-            file_name=st.session_state.pdf_filename,
-            mime="application/pdf",
-            use_container_width=True,
+    
+    # Add conversation history
+    for msg in conversation_histories[agent_id]:
+        messages.append(msg)
+    
+    # Add current user message
+    messages.append({"role": "user", "content": user_message})
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            max_tokens=500,
+            temperature=0.7
         )
+        
+        assistant_message = response.choices[0].message.content
+        
+        # Update conversation history
+        conversation_histories[agent_id].append({"role": "user", "content": user_message})
+        conversation_histories[agent_id].append({"role": "assistant", "content": assistant_message})
+        
+        return assistant_message
+        
+    except Exception as e:
+        return f"Error getting response: {str(e)}"
 
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+def chat_with_agent(agent_id, user_message, chat_history):
+    """Handle chat interaction with an agent"""
+    if not user_message.strip():
+        return chat_history, ""
+    
+    # Get AI response
+    response = get_ai_response(agent_id, user_message)
+    
+    # Update chat history for display
+    chat_history = chat_history + [(user_message, response)]
+    
+    return chat_history, ""
 
-# ---------------- RIGHT PANE ----------------
-with right:
-    st.markdown("<div class='pane'>", unsafe_allow_html=True)
-    st.markdown(
-        f"""
-<div class="pane-header">
-  <div style="display:flex;align-items:center;gap:10px;">
-    <div style="width:34px;height:34px;border-radius:12px;background:linear-gradient(180deg,#0B2B6F,{ACCENT});
-                display:flex;align-items:center;justify-content:center;color:white;font-weight:900;">🧾</div>
-    <div>
-      <div style="font-weight:900;">Case Context</div>
-      <div class="muted">Scrollable reference</div>
-    </div>
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
+def start_conversation(agent_id):
+    """Start a new conversation with greeting"""
+    agent = AGENTS[agent_id]
+    
+    # Generate a greeting using AI
+    greeting_prompt = f"Sarah Chen, the Project Manager, has just entered your office/meeting room to interview you about the Delta Wind Farm project. Give a brief, natural greeting that fits your personality and hints at your area of expertise. Keep it to 1-2 sentences."
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": agent["system_prompt"]},
+                {"role": "user", "content": greeting_prompt}
+            ],
+            max_tokens=150,
+            temperature=0.7
+        )
+        greeting = response.choices[0].message.content
+        conversation_histories[agent_id] = [{"role": "assistant", "content": greeting}]
+        return [(None, greeting)]
+    except Exception as e:
+        # Fallback greeting
+        greetings = {
+            "sam": "Hey Sarah, yeah, let me pull up the field logs. What do you need to know about onshore operations?",
+            "rita": "Sarah, I know you are going to ask about the freight delays. Let me explain what is happening with the marine shipping situation...",
+            "maya": "Sarah, glad you are here. Let me sketch this out - A6 and A8 are more coupled than your baseline plan shows. This is important.",
+            "leo": "Sarah, I will keep this brief. Here is what you need to understand about budget constraints and policy.",
+            "carlos": "Sarah. Let us talk about compliance requirements and what could potentially halt your project.",
+            "ava": "Sarah, I have about 10 minutes before my next meeting. Tell me you have a coherent plan that does not miss June 30."
+        }
+        greeting = greetings.get(agent_id, "Hello, how can I help you?")
+        conversation_histories[agent_id] = [{"role": "assistant", "content": greeting}]
+        return [(None, greeting)]
+
+def reset_conversation(agent_id):
+    """Reset conversation history for an agent"""
+    conversation_histories[agent_id] = []
+    return start_conversation(agent_id)
+
+def export_all_conversations():
+    """Export all conversations to text"""
+    from datetime import datetime
+    
+    text = "DELTA WIND FARM PROJECT - Interview Transcript\n"
+    text += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    text += "=" * 70 + "\n\n"
+    
+    for agent_id, history in conversation_histories.items():
+        if history:
+            agent = AGENTS[agent_id]
+            text += f"{agent['name']} - {agent['role']}\n"
+            text += "-" * 70 + "\n\n"
+            for msg in history:
+                speaker = "You (Sarah Chen)" if msg["role"] == "user" else agent["name"]
+                text += f"{speaker}:\n{msg['content']}\n\n"
+            text += "\n\n"
+    
+    return text
+
+# Build the Gradio interface
+with gr.Blocks(title="Delta Wind Farm Simulation") as demo:
+    
+    # Header
+    gr.Markdown(
+        """
+        # Delta Wind Farm Project
+        ## Managing an Onshore/Offshore Renewable Build
+        
+        **You are Sarah Chen**, Project Manager for Delta Renewables. Interview stakeholders to gather information, identify the critical path, and develop a plan that hits the June 30 deadline.
+        """
     )
-    st.markdown("<div class='pane-body'>", unsafe_allow_html=True)
-
-    st.markdown("<div class='section-title'>Quick reminders</div>", unsafe_allow_html=True)
-    st.markdown(
-        "<div class='note'>• Investor milestone due: June 30\n"
-        "• One crash option only (S1–S5)\n"
-        "• Regulatory paperwork gate can cause +5 day halt\n"
-        "• A6↔A8 rework loop exists\n"
-        "• Offshore weather window variability</div>",
-        unsafe_allow_html=True,
-    )
-
-    st.write("")
-    st.markdown("<div class='section-title'>Case text (scroll)</div>", unsafe_allow_html=True)
-    st.markdown(
-        f"<div class='note' style='max-height:560px; overflow-y:auto;'>{st.session_state.case_text}</div>",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# ---------------- CENTER PANE ----------------
-with center:
-    st.markdown("<div class='pane'>", unsafe_allow_html=True)
-    st.markdown(
-        f"""
-<div class="pane-header">
-  <div style="display:flex;align-items:center;justify-content:space-between;">
-    <div style="display:flex;align-items:center;gap:10px;">
-      <div style="width:34px;height:34px;border-radius:12px;background:linear-gradient(180deg,{SMU_BLUE},{ACCENT});
-                  display:flex;align-items:center;justify-content:center;color:white;font-weight:900;">💬</div>
-      <div>
-        <div style="font-weight:900;">Sarah Chen • Project Manager</div>
-        <div class="muted">Center pane scrolls • page stays fixed</div>
-      </div>
-    </div>
-    <div class="muted">{st.session_state.view.upper()}</div>
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<div class='pane-body chat-wrap'>", unsafe_allow_html=True)
-
-    client = st.session_state.client
-    case_text = st.session_state.case_text
-    ai_disabled = (not key_ready) or (client is None)
-
-    # ---------- INSIGHTS ----------
-    if st.session_state.view == "insights":
-        st.markdown("<div class='section-title'>Insights</div>", unsafe_allow_html=True)
-
-        if not st.session_state.insights:
-            if st.button("Generate Insights", type="primary", use_container_width=True, disabled=ai_disabled):
-                try:
-                    with st.spinner("Generating insights…"):
-                        resp = call_chat_completion(
-                            client,
-                            model="gpt-4o-mini",
-                            messages=[
-                                {"role": "system", "content": "You produce crisp, decision-useful analysis."},
-                                {"role": "user", "content": insights_prompt(case_text)},
-                            ],
-                        )
-                        st.session_state.insights = resp.choices[0].message.content.strip()
-                        st.rerun()
-                except Exception as e:
-                    st.error("Error: Connection error.")
-                    st.caption(friendly_connection_help(e))
-            if ai_disabled:
-                st.info("Replace OPENAI_KEY in code to enable this button.")
-        else:
-            st.markdown(f"<div class='note'>{st.session_state.insights}</div>", unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.stop()
-
-    # ---------- PROBLEMS ----------
-    if st.session_state.view == "problems":
-        st.markdown("<div class='section-title'>Problems & Risks</div>", unsafe_allow_html=True)
-
-        if not st.session_state.problems:
-            if st.button("Generate Problems & Risks", type="primary", use_container_width=True, disabled=ai_disabled):
-                try:
-                    with st.spinner("Generating…"):
-                        resp = call_chat_completion(
-                            client,
-                            model="gpt-4o-mini",
-                            messages=[
-                                {"role": "system", "content": "You produce crisp, structured lists."},
-                                {"role": "user", "content": problems_prompt(case_text)},
-                            ],
-                        )
-                        st.session_state.problems = resp.choices[0].message.content.strip()
-                        st.rerun()
-                except Exception as e:
-                    st.error("Error: Connection error.")
-                    st.caption(friendly_connection_help(e))
-            if ai_disabled:
-                st.info("Replace OPENAI_KEY in code to enable this button.")
-        else:
-            st.markdown(f"<div class='note'>{st.session_state.problems}</div>", unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.stop()
-
-    # ---------- ROLE ----------
-    if st.session_state.view == "role":
-        st.markdown("<div class='section-title'>What Sarah Does (in this case)</div>", unsafe_allow_html=True)
-
-        if not st.session_state.role_info:
-            if st.button("Show Sarah’s Role", type="primary", use_container_width=True, disabled=ai_disabled):
-                try:
-                    with st.spinner("Writing Sarah’s role summary…"):
-                        resp = call_chat_completion(
-                            client,
-                            model="gpt-4o-mini",
-                            messages=[
-                                {"role": "system", "content": "Be concise and specific to the case."},
-                                {"role": "user", "content": what_i_do_prompt(case_text)},
-                            ],
-                        )
-                        st.session_state.role_info = resp.choices[0].message.content.strip()
-                        st.rerun()
-                except Exception as e:
-                    st.error("Error: Connection error.")
-                    st.caption(friendly_connection_help(e))
-            if ai_disabled:
-                st.info("Replace OPENAI_KEY in code to enable this button.")
-        else:
-            st.markdown(f"<div class='note'>{st.session_state.role_info}</div>", unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.stop()
-
-    # ---------- CHAT ----------
-    st.markdown("<div class='chat-scroll'>", unsafe_allow_html=True)
-    if not st.session_state.chat:
-        st.markdown("<div class='muted'>Start: “Hi Sarah, what’s the situation and what’s blocking June 30?”</div>", unsafe_allow_html=True)
-    else:
-        for msg in st.session_state.chat:
-            cls = "user" if msg["role"] == "user" else "assistant"
-            st.markdown(f"<div class='bubble {cls}'>{msg.get('content','')}</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("<div class='chat-inputbar'>", unsafe_allow_html=True)
-    with st.form("chat_form", clear_on_submit=True):
-        cols = st.columns([5.2, 1.0], gap="small")
-        user_input = cols[0].text_input("Message", label_visibility="collapsed", placeholder="Ask Sarah…")
-        send = cols[1].form_submit_button("Send", use_container_width=True, type="primary", disabled=ai_disabled)
-
-        if send and user_input.strip():
-            st.session_state.chat.append({"role": "user", "content": user_input.strip()})
-
-            prompt = sarah_system_prompt(case_text)
-            try:
-                resp = call_chat_completion(
-                    client,
-                    model="gpt-4o-mini",
-                    messages=[{"role": "system", "content": prompt}] + st.session_state.chat,
+    
+    with gr.Row():
+        # Left Column - Stakeholders
+        with gr.Column(scale=1):
+            gr.Markdown("### Stakeholders")
+            gr.Markdown("*Click to start an interview*")
+            
+            agent_buttons = {}
+            for agent_id, agent in AGENTS.items():
+                agent_buttons[agent_id] = gr.Button(
+                    f"{agent['name']} - {agent['role']}"
                 )
-                reply = resp.choices[0].message.content.strip()
-                st.session_state.chat.append({"role": "assistant", "content": reply})
-                st.rerun()
+        
+        # Center Column - Chat
+        with gr.Column(scale=2):
+            current_agent = gr.State(value=None)
+            
+            agent_name_display = gr.Markdown("### Select a stakeholder to begin")
+            
+            chatbot = gr.Chatbot(
+                label="Interview",
+                height=400
+            )
+            
+            with gr.Row():
+                msg_input = gr.Textbox(
+                    placeholder="Ask about activities, dependencies, risks, recommendations...",
+                    label="Your message",
+                    scale=4
+                )
+                send_btn = gr.Button("Send", variant="primary", scale=1)
+            
+            with gr.Row():
+                reset_btn = gr.Button("Reset Conversation", size="sm")
+                export_btn = gr.Button("Export All Interviews", size="sm")
+            
+            export_output = gr.Textbox(label="Exported Transcript", visible=False, lines=10)
+        
+        # Right Column - Objectives and Info
+        with gr.Column(scale=1):
+            gr.Markdown("### Mission Objectives")
+            gr.Markdown("""
+            **Investigation Phase:**
+            - Interview all 6 stakeholders
+            - Identify dependencies (A1-A12)
+            - Understand budget/timeline constraints
+            - Collect three-point estimates
+            - Discover A6-A8 coupling risk
+            - Learn regulatory paperwork gate
+            """)
+            
+            gr.Markdown("### Key Constraints")
+            gr.Markdown("""
+            - **Deadline:** June 30 (non-negotiable)
+            - **Contingency:** $400,000
+            - **Policy:** Only ONE crash option
+            - **Penalty:** $3,000/day after June 30
+            """)
+            
+            gr.Markdown("### Crash Options")
+            gr.Markdown("""
+            - **S1:** A3 Foundation (-3d, $70k)
+            - **S2:** A5 Staging (-4d, $110k)
+            - **S3:** A6 Towers (-5d, $150k)
+            - **S4:** A8 Cabling (-4d, $130k)
+            - **S5:** A9 Substation (-3d, $60k)
+            """)
+            
+            gr.Markdown("### Key Dependencies")
+            gr.Markdown("""
+            - A1 then A3
+            - A2 then A4
+            - A3 and A2 then A4
+            - A4 and A5 then A6
+            - A6 then A7, A8
+            - **A6-A8 (coupling risk!)**
+            - A8 and A9 then A10
+            - A10 then A11 then A12
+            """)
+    
+    # Event handlers for agent selection
+    def select_agent(agent_id):
+        agent = AGENTS[agent_id]
+        chat_history = start_conversation(agent_id)
+        return (
+            agent_id,
+            f"### Interview: {agent['name']}\n*{agent['role']}*",
+            chat_history
+        )
+    
+    for agent_id, btn in agent_buttons.items():
+        btn.click(
+            fn=lambda aid=agent_id: select_agent(aid),
+            outputs=[current_agent, agent_name_display, chatbot]
+        )
+    
+    # Send message
+    def send_message(agent_id, message, history):
+        if not agent_id or not message.strip():
+            return history, ""
+        return chat_with_agent(agent_id, message, history)
+    
+    send_btn.click(
+        fn=send_message,
+        inputs=[current_agent, msg_input, chatbot],
+        outputs=[chatbot, msg_input]
+    )
+    
+    msg_input.submit(
+        fn=send_message,
+        inputs=[current_agent, msg_input, chatbot],
+        outputs=[chatbot, msg_input]
+    )
+    
+    # Reset conversation
+    def do_reset(agent_id):
+        if not agent_id:
+            return []
+        return reset_conversation(agent_id)
+    
+    reset_btn.click(
+        fn=do_reset,
+        inputs=[current_agent],
+        outputs=[chatbot]
+    )
+    
+    # Export conversations
+    def do_export():
+        transcript = export_all_conversations()
+        return gr.update(visible=True, value=transcript)
+    
+    export_btn.click(
+        fn=do_export,
+        outputs=[export_output]
+    )
+
+# Keep-Alive functionality to prevent Space from sleeping
+import threading
+import time
+import urllib.request
+
+def keep_alive():
+    """Background thread to keep the Space awake by pinging itself"""
+    space_host = os.environ.get("SPACE_HOST", "")
+    if space_host:
+        ping_url = f"https://{space_host}"
+        while True:
+            try:
+                urllib.request.urlopen(ping_url, timeout=10)
+                print(f"[Keep-Alive] Pinged {ping_url} at {time.strftime('%H:%M:%S')}")
             except Exception as e:
-                st.error("Error: Connection error.")
-                st.caption(friendly_connection_help(e))
+                print(f"[Keep-Alive] Ping failed: {e}")
+            time.sleep(600)  # Ping every 10 minutes
 
-    if ai_disabled:
-        st.info("Replace OPENAI_KEY in code to enable chat.")
+# Start keep-alive thread
+keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+keep_alive_thread.start()
+print("[Keep-Alive] Background ping thread started")
 
-    st.markdown("</div>", unsafe_allow_html=True)  # inputbar
-    st.markdown("</div>", unsafe_allow_html=True)  # pane-body
-    st.markdown("</div>", unsafe_allow_html=True)  # pane
+# Launch
+if __name__ == "__main__":
+    demo.launch()
