@@ -5,7 +5,7 @@ from openai import OpenAI
 # PAGE CONFIG
 # --------------------------------------------------
 st.set_page_config(
-    page_title="SMU Cox AI Teaching Tools",
+    page_title="AI Teaching Tools",
     layout="wide"
 )
 
